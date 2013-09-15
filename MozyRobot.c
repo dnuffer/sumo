@@ -81,7 +81,7 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 	else
 		output = 0;
 
-	writeDebugStreamLine("output after correction: %d", (long)output);
+	//writeDebugStreamLine("output after correction: %d", (long)output);
 
 	state->prev_error = error;
 	state->prev_output = output;
@@ -91,6 +91,12 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 	return output;
 }
 
+const int SONAR_BINS = 12;
+int sonar_readings[SONAR_BINS];
+
+const float ENCODER_COUNTS_PER_REV = 627.2;
+const float ENCODER_COUNTS_PER_BIN = ENCODER_COUNTS_PER_REV / SONAR_BINS;
+
 void move_to_position(long setpoint)
 {
 	pid_controller_t controller;
@@ -98,9 +104,10 @@ void move_to_position(long setpoint)
 	controller.KP = -0.6; //0.6 * Ku; //-1.0;
 	controller.KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
 	controller.KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
-	controller.MAX_CHANGE = 25;
-	controller.MIN_OUTPUT = -127;
+	controller.MAX_CHANGE = 75;
+	//controller.MAX_OUTPUT = 50;
 	controller.MAX_OUTPUT = 127;
+	controller.MIN_OUTPUT = -controller.MAX_OUTPUT;
 	controller.EFFECTIVE_MIN = 20;
 	controller.MAX_INTEGRAL = controller.MAX_OUTPUT / controller.KI * 2;
 
@@ -113,10 +120,24 @@ void move_to_position(long setpoint)
 
 		motor[sonar_rotate] = output;
 
-		wait1Msec(10);
+		int reading = SensorValue[ultrasonic];
+		if (reading != -1)
+			sonar_readings[(nMotorEncoder[sonar_rotate] / ENCODER_COUNTS_PER_BIN) % SONAR_BINS] = reading;
+		//wait1Msec(10);
 	}
 
 	motor[sonar_rotate] = 0;
+}
+
+void print_closest()
+{
+	int min_idx = 0;
+	for (int i = 1; i < SONAR_BINS; i++)
+	{
+		if (sonar_readings[i] < sonar_readings[min_idx])
+			min_idx = i;
+	}
+	writeDebugStreamLine("closest is at %d deg, distance of %d mm", min_idx * 360/SONAR_BINS, sonar_readings[min_idx]);
 }
 
 task main()
@@ -133,7 +154,10 @@ task main()
 		//}
 		move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
 		//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
+
+		print_closest();
 		move_to_position(0);
+		print_closest();
 		/*
 		move_to_position(1000);
 		wait1Msec(2000);
