@@ -94,7 +94,7 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 void move_to_position(long setpoint)
 {
 	pid_controller_t controller;
-	controller.CLOSE_ENOUGH = 50;
+	controller.CLOSE_ENOUGH = 15;
 	controller.KP = -0.6; //0.6 * Ku; //-1.0;
 	controller.KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
 	controller.KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
@@ -107,7 +107,7 @@ void move_to_position(long setpoint)
 	pid_state_t state;
 	init_pid_state(&state, &controller);
 
-	while (abs(state.prev_error) > controller.CLOSE_ENOUGH || abs(state.prev_output) > controller.EFFECTIVE_MIN || abs(state.prev_derivative) > 0)
+	while (abs(state.prev_error) > controller.CLOSE_ENOUGH)
 	{
 		long output = update_pid_controller(&controller, &state, setpoint, nMotorEncoder[sonar_rotate]);
 
@@ -131,7 +131,7 @@ task main()
 		//	move_to_position(i);
 		//	wait1Msec(250);
 		//}
-		move_to_position(690); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
+		move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
 		//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
 		move_to_position(0);
 		/*
