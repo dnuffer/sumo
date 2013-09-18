@@ -1,8 +1,9 @@
 #pragma config(I2C_Usage, I2C1, i2cSensors)
 #pragma config(Sensor, in1,    line_follower,  sensorLineFollower)
 #pragma config(Sensor, in4,    potentiometer,  sensorPotentiometer)
-#pragma config(Sensor, dgtl1,  limit_switch,   sensorTouch)
-#pragma config(Sensor, dgtl2,  bumper_switch,  sensorTouch)
+#pragma config(Sensor, dgtl1,  button1,        sensorTouch)
+#pragma config(Sensor, dgtl2,  button2,        sensorTouch)
+#pragma config(Sensor, dgtl3,  button3,        sensorTouch)
 #pragma config(Sensor, dgtl8,  ultrasonic,     sensorSONAR_mm)
 #pragma config(Sensor, dgtl10, encoder,        sensorQuadEncoder)
 #pragma config(Sensor, I2C_1,  ,               sensorQuadEncoderOnI2CPort,    , AutoAssign)
@@ -93,11 +94,21 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 	return output;
 }
 
-const int SONAR_BINS = 12;
+const int SONAR_BINS = 15;
 int sonar_readings[SONAR_BINS];
+int straight_ahead = 0;
 
 const float ENCODER_COUNTS_PER_REV = 627.2;
 const float ENCODER_COUNTS_PER_BIN = ENCODER_COUNTS_PER_REV / SONAR_BINS;
+
+long mod(long x, long y)
+{
+	if (x < 0)
+	{
+		x += y * ((-x / y) + 1);
+	}
+	return x % y;
+}
 
 void move_to_position(long setpoint)
 {
@@ -107,8 +118,8 @@ void move_to_position(long setpoint)
 	controller.KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
 	controller.KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
 	controller.MAX_CHANGE = 75;
-	//controller.MAX_OUTPUT = 50;
-	controller.MAX_OUTPUT = 127;
+	controller.MAX_OUTPUT = 50;
+	//controller.MAX_OUTPUT = 127;
 	controller.MIN_OUTPUT = -controller.MAX_OUTPUT;
 	controller.EFFECTIVE_MIN = 20;
 	controller.MAX_INTEGRAL = controller.MAX_OUTPUT / controller.KI * 2;
@@ -123,9 +134,10 @@ void move_to_position(long setpoint)
 		motor[sonar_rotate] = output;
 
 		int reading = SensorValue[ultrasonic];
+		long encoder_reading = nMotorEncoder[sonar_rotate];
 		const int MIN_SONAR_DISTANCE = 30;
 		if (reading > MIN_SONAR_DISTANCE)
-			sonar_readings[(nMotorEncoder[sonar_rotate] / ENCODER_COUNTS_PER_BIN) % SONAR_BINS] = reading;
+			sonar_readings[mod(encoder_reading / ENCODER_COUNTS_PER_BIN, SONAR_BINS)] = reading;
 		//wait1Msec(10);
 	}
 
@@ -140,7 +152,7 @@ void reset_readings()
 	}
 }
 
-void print_closest()
+int find_closest_sonar_bin()
 {
 	int min_idx = 0;
 	for (int i = 1; i < SONAR_BINS; i++)
@@ -148,8 +160,65 @@ void print_closest()
 		if (sonar_readings[i] < sonar_readings[min_idx])
 			min_idx = i;
 	}
+	return min_idx;
+}
+
+void print_closest()
+{
+	int min_idx = find_closest_sonar_bin();
 	writeDebugStreamLine("closest is at %d deg, distance of %d mm", min_idx * 360/SONAR_BINS, sonar_readings[min_idx]);
 }
+
+#define	Calibrating_Sonar 0
+#define Follow_Closest_Object 1
+#define Do_Nothing 2
+int robot_mode = Do_Nothing;
+
+int get_do_nothing_mode_btn()
+{
+	// vexRT[Btn6D]
+	return SensorValue[button1];
+}
+
+int get_calibrating_mode_btn()
+{
+	// vexRT[Btn6U]
+	return SensorValue[button2];
+}
+
+int get_follow_closest_object_mode_btn()
+{
+	// vexRT[Btn7U]
+	return SensorValue[button3];
+}
+
+void check_and_switch_mode()
+{
+	if (get_do_nothing_mode_btn())
+	{
+		while (get_do_nothing_mode_btn())
+			wait1Msec(1);
+		robot_mode = Do_Nothing;
+		writeDebugStreamLine("Switching to Do_Nothing mode");
+	}
+	else if (get_calibrating_mode_btn())
+	{
+		while (get_calibrating_mode_btn())
+			wait1Msec(1);
+		robot_mode = Calibrating_Sonar;
+		// PlaySound(soundBeepBeep);
+		writeDebugStreamLine("Switching to calibrate_sonar_mode");
+	}
+	else if (get_follow_closest_object_mode_btn())
+	{
+		while (get_follow_closest_object_mode_btn())
+			wait1Msec(1);
+		robot_mode = Follow_Closest_Object;
+		writeDebugStreamLine("Switching to Follow_Closest_Object mode");
+	}
+}
+
+
 
 task main()
 {
@@ -158,13 +227,41 @@ task main()
 
 	while (1)
 	{
-		reset_readings();
-		move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
+		check_and_switch_mode();
+		switch (robot_mode)
+		{
+			case Do_Nothing:
+				break;
+			case Calibrating_Sonar:
+				reset_readings();
+				for (int i = 0; i < 3; i++)
+				{
+					move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
+					//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
+					move_to_position(0);
+				}
+				straight_ahead = find_closest_sonar_bin();
+				writeDebugStreamLine("got calibration of %d", straight_ahead);
+				move_to_position(ENCODER_COUNTS_PER_BIN * (straight_ahead + 0.5));
+				robot_mode = Do_Nothing;
+				break;
+
+			case Follow_Closest_Object:
+
+				break;
+
+			default:
+				return;
+		}
+
+		// spins the sonar
+		//reset_readings();
+		//move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
 		//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
 
-		print_closest();
-		move_to_position(0);
-		print_closest();
+		//print_closest();
+		//move_to_position(0);
+		//print_closest();
 		/*
 		move_to_position(1000);
 		wait1Msec(2000);
