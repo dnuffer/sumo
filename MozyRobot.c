@@ -110,6 +110,7 @@ long mod(long x, long y)
 	if (x < 0)
 	{
 		x += y * ((-x / y) + 1);
+		//return x % y + y;
 	}
 	return x % y;
 }
@@ -281,12 +282,9 @@ task main()
 			case Calibrating_Sonar:
 				stop_moving();
 				reset_readings();
-				for (int i = 0; i < 3; i++)
-				{
-					move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
-					//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
-					move_to_position(0);
-				}
+				move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
+				//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
+				move_to_position(0);
 				straight_ahead = find_closest_sonar_bin();
 				writeDebugStreamLine("got calibration of %d", straight_ahead);
 				move_to_position(ENCODER_COUNTS_PER_BIN * (straight_ahead + 0.5));
