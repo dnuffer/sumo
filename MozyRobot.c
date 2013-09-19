@@ -56,7 +56,7 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 	// If no measurable time has passed, we can't divide by zero, so return the last output value and don't update anything
 	if (elapsed_msec <= 0)
 	{
-		writeDebugStreamLine("elapsed_msec == 0!");
+		//writeDebugStreamLine("elapsed_msec == 0!");
 		return state->prev_output;
 	}
 
@@ -98,8 +98,9 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 	return output;
 }
 
-const int SONAR_BINS = 6;
+const int SONAR_BINS = 12;
 int sonar_readings[SONAR_BINS];
+long sonar_times[SONAR_BINS];
 
 const float ENCODER_COUNTS_PER_REV = 627.2;
 const float ENCODER_COUNTS_PER_BIN = ENCODER_COUNTS_PER_REV / SONAR_BINS;
@@ -114,20 +115,28 @@ long mod(long x, long y)
 	return x % y;
 }
 
+// This could be 127, but the sonar doesn't work very well (at all) that fast
+#define MAX_SONAR_MOTOR_SPEED 30
+// The docs say 15, but sometimes even 15 doesn't move. 20 is pretty reliable for a slow movement.
+#define MIN_MOTOR_SPEED 20
+
+void init_sonar_pid_controller(pid_controller_t* controller)
+{
+	controller->CLOSE_ENOUGH = 15;
+	controller->KP = -0.6; //0.6 * Ku; //-1.0;
+	controller->KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
+	controller->KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
+	controller->MAX_CHANGE = 75;
+	controller->MAX_OUTPUT = MAX_SONAR_MOTOR_SPEED;
+	controller->MIN_OUTPUT = -controller->MAX_OUTPUT;
+	controller->EFFECTIVE_MIN = MIN_MOTOR_SPEED;
+	controller->MAX_INTEGRAL = controller->MAX_OUTPUT / controller->KI * 2;
+}
+
 void move_to_position(long setpoint)
 {
 	pid_controller_t controller;
-	controller.CLOSE_ENOUGH = 15;
-	controller.KP = -0.6; //0.6 * Ku; //-1.0;
-	controller.KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
-	controller.KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
-	controller.MAX_CHANGE = 75;
-	controller.MAX_OUTPUT = 50;
-	//controller.MAX_OUTPUT = 127;
-	controller.MIN_OUTPUT = -controller.MAX_OUTPUT;
-	controller.EFFECTIVE_MIN = 20;
-	controller.MAX_INTEGRAL = controller.MAX_OUTPUT / controller.KI * 2;
-
+	init_sonar_pid_controller(&controller);
 	pid_state_t state;
 	init_pid_state(&state, &controller);
 
@@ -141,18 +150,27 @@ void move_to_position(long setpoint)
 		long encoder_reading = nMotorEncoder[sonar_rotate];
 		const int MIN_SONAR_DISTANCE = 30;
 		if (reading > MIN_SONAR_DISTANCE)
-			sonar_readings[mod(encoder_reading / ENCODER_COUNTS_PER_BIN, SONAR_BINS)] = reading;
+		{
+			int bin = mod(encoder_reading / ENCODER_COUNTS_PER_BIN, SONAR_BINS);
+			sonar_readings[bin] = reading;
+			sonar_times[bin] = nPgmTime;
+		}
 		wait1Msec(10);
 	}
 
 	motor[sonar_rotate] = 0;
 }
 
+#define Sonar_Full 0
+#define Sonar_Close 1
+int sonar_scan_mode = Sonar_Full;
+
 void reset_readings()
 {
 	for (int i = 0; i < SONAR_BINS; i++)
 	{
 		sonar_readings[i] = MAX_INT;
+		sonar_times[i] = -1;
 	}
 }
 
@@ -171,6 +189,18 @@ void print_closest()
 {
 	int min_idx = find_closest_sonar_bin();
 	writeDebugStreamLine("closest is at %d deg, distance of %d mm", min_idx * 360/SONAR_BINS, sonar_readings[min_idx]);
+}
+
+bool have_recent_sonar_readings()
+{
+	long cur_time = nPgmTime;
+	long max_age = 5 * 1000;
+	for (int i = 0; i < SONAR_BINS; i++)
+	{
+		if (sonar_times[i] < cur_time - max_age || sonar_times[i] == -1 || sonar_readings[i] == MAX_INT)
+			return false;
+	}
+	return true;
 }
 
 #define Follow_Closest_Object 1
@@ -207,7 +237,7 @@ void check_and_switch_mode()
 	}
 }
 
-#define MOTOR_POWER 127
+#define MOTOR_POWER 0
 void turn_left()
 {
 	motor[left] = 0;//-MOTOR_POWER;
@@ -238,21 +268,13 @@ task main()
 	nMotorEncoder[sonar_rotate] = 0;
 
 	pid_controller_t controller;
-	controller.CLOSE_ENOUGH = 15;
-	controller.KP = -0.6; //0.6 * Ku; //-1.0;
-	controller.KI = -0.01;//-0.01; // 2 * KP / Tu; //-0.01;
-	controller.KD = -45.0;//-5.0; //KP * Tu / 8; //-100.0;
-	controller.MAX_CHANGE = 75;
-	controller.MAX_OUTPUT = 50;
-	//controller.MAX_OUTPUT = 127;
-	controller.MIN_OUTPUT = -controller.MAX_OUTPUT;
-	controller.EFFECTIVE_MIN = 20;
-	controller.MAX_INTEGRAL = controller.MAX_OUTPUT / controller.KI * 2;
-
+	init_sonar_pid_controller(&controller);
 	pid_state_t state;
 	init_pid_state(&state, &controller);
 
 	int sonar_destination = 0;
+
+	reset_readings();
 
 	while (1)
 	{
@@ -270,7 +292,7 @@ task main()
 				int closest_bin = find_closest_sonar_bin();
 				writeDebugStreamLine("closest_bin: %d", closest_bin);
 				int degrees_to_turn = closest_bin * (360/SONAR_BINS);
-				writeDebugStreamLine("degrees_to_turn: %d", degrees_to_turn);
+				//writeDebugStreamLine("degrees_to_turn: %d", degrees_to_turn);
 				while (degrees_to_turn > 180)
 				{
 					degrees_to_turn -= 360;
@@ -279,7 +301,7 @@ task main()
 				{
 					degrees_to_turn += 360;
 				}
-				writeDebugStreamLine("degrees_to_turn: %d", degrees_to_turn);
+				//writeDebugStreamLine("degrees_to_turn: %d", degrees_to_turn);
 
 				if (degrees_to_turn < 360/SONAR_BINS)
 				{
@@ -295,19 +317,62 @@ task main()
 				}
 
 				long encoder_reading = nMotorEncoder[sonar_rotate];
-				if (encoder_reading > 0 - controller.CLOSE_ENOUGH && encoder_reading < 0 + controller.CLOSE_ENOUGH)
-					sonar_destination = 720;
-				else if (encoder_reading > 720 - controller.CLOSE_ENOUGH && encoder_reading < 720 + controller.CLOSE_ENOUGH)
-					sonar_destination = 0;
+				long sonar_min = 0;
+				long sonar_max = 720;
+				controller.MAX_OUTPUT = MAX_SONAR_MOTOR_SPEED;
+
+				switch (sonar_scan_mode)
+				{
+					case Sonar_Full:
+						if (sonar_readings[closest_bin] < 500 && have_recent_sonar_readings())
+						{
+							sonar_scan_mode = Sonar_Close;
+						}
+						else
+						{
+							sonar_min = 0;
+							sonar_max = 720;
+							if (sonar_destination != sonar_min && sonar_destination != sonar_max)
+								sonar_destination = sonar_min;
+						}
+						break;
+
+					case Sonar_Close:
+						if (sonar_readings[closest_bin] >= 500 || !have_recent_sonar_readings())
+						{
+							sonar_scan_mode = Sonar_Full;
+						}
+						else
+						{
+							sonar_min = (closest_bin - 2) * ENCODER_COUNTS_PER_BIN + 1;
+							sonar_max = (closest_bin + 2) * ENCODER_COUNTS_PER_BIN;
+
+							if (sonar_destination != sonar_min && sonar_destination != sonar_max)
+								sonar_destination = sonar_min;
+						}
+						break;
+				}
+
+				if (encoder_reading > sonar_min - controller.CLOSE_ENOUGH && encoder_reading < sonar_min + controller.CLOSE_ENOUGH)
+					sonar_destination = sonar_max;
+				else if (encoder_reading > sonar_max - controller.CLOSE_ENOUGH && encoder_reading < sonar_max + controller.CLOSE_ENOUGH)
+					sonar_destination = sonar_min;
+
+				writeDebugStreamLine("using sonar_destination: %d", sonar_destination);
 
 				long output = update_pid_controller(&controller, &state, sonar_destination, nMotorEncoder[sonar_rotate]);
 
 				motor[sonar_rotate] = output;
 
 				int reading = SensorValue[ultrasonic];
+				//writeDebugStreamLine("got sonar reading: %d", reading);
 				const int MIN_SONAR_DISTANCE = 30;
 				if (reading > MIN_SONAR_DISTANCE)
-					sonar_readings[mod(encoder_reading / ENCODER_COUNTS_PER_BIN, SONAR_BINS)] = reading;
+				{
+					int bin = mod(encoder_reading / ENCODER_COUNTS_PER_BIN, SONAR_BINS);
+					sonar_readings[bin] = reading;
+					sonar_times[bin] = nPgmTime;
+				}
 				//wait1Msec(1);
 
 				break;
@@ -315,78 +380,5 @@ task main()
 			default:
 				return;
 		}
-
-		// spins the sonar
-		//reset_readings();
-		//move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
-		//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
-
-		//print_closest();
-		//move_to_position(0);
-		//print_closest();
-		/*
-		move_to_position(1000);
-		wait1Msec(2000);
-		move_to_position(0);
-		wait1Msec(2000);
-		wait1Msec(500);
-		move_to_position(5100);
-		wait1Msec(500);
-		move_to_position(-100);
-		wait1Msec(500);
-		move_to_position(-200);
-		wait1Msec(500);
-		*/
-
-		/*
-		//While less than 1000 encoder counts of the right motor
-		while(abs(nMotorEncoder[motor1]) < 200)
-		{
-			//Move forward at half power
-			motor[motor1] = 100;
-			//motor[leftMotor]	= 63;
-		}
-
-		motor[motor1] = 0;
-	  //Clear the encoders associated with the left and right motors
-		//nMotorEncoder[motor1] = 0;
-		//nMotorEncoder[leftMotor] = 0;
-
-		wait1Msec(500);
-
-		//While less than 1000 encoder counts of the right motor
-		int sign = nMotorEncoder[motor1] > 0 ? 1 : -1;
-		while(sign * nMotorEncoder[motor1] > 0)
-		{
-			//Move in reverse at half power
-			motor[motor1] = -100;
-			//motor[leftMotor]	= -63;
-		}
-
-		motor[motor1] = 0;
-		*/
-		/*
-		startMotor(motor1, 40);
-		untilRotations(1.0/10.0, I2C_1);
-		stopMotor(motor1);
-		wait(0.2);
-
-		startMotor(motor1, 40);
-		untilRotations(1.0/10.0, I2C_1);
-		stopMotor(motor1);
-		wait(0.2);
-
-		startMotor(motor1, -40);
-		untilRotations(1.0/10.0, I2C_1);
-		stopMotor(motor1);
-		wait(0.2);
-
-		startMotor(motor1, -40);
-		untilRotations(1.0/10.0, I2C_1);
-		stopMotor(motor1);
-		wait(0.2);
-		*/
 	}
-
-
 }
