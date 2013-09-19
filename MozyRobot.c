@@ -100,7 +100,6 @@ long update_pid_controller(pid_controller_t* controller, pid_state_t* state, lon
 
 const int SONAR_BINS = 6;
 int sonar_readings[SONAR_BINS];
-int straight_ahead = 0;
 
 const float ENCODER_COUNTS_PER_REV = 627.2;
 const float ENCODER_COUNTS_PER_BIN = ENCODER_COUNTS_PER_REV / SONAR_BINS;
@@ -174,7 +173,6 @@ void print_closest()
 	writeDebugStreamLine("closest is at %d deg, distance of %d mm", min_idx * 360/SONAR_BINS, sonar_readings[min_idx]);
 }
 
-#define	Calibrating_Sonar 0
 #define Follow_Closest_Object 1
 #define Do_Nothing 2
 int robot_mode = Do_Nothing;
@@ -183,12 +181,6 @@ int get_do_nothing_mode_btn()
 {
 	// vexRT[Btn6D]
 	return SensorValue[button1];
-}
-
-int get_calibrating_mode_btn()
-{
-	// vexRT[Btn6U]
-	return SensorValue[button2];
 }
 
 int get_follow_closest_object_mode_btn()
@@ -205,14 +197,6 @@ void check_and_switch_mode()
 			wait1Msec(1);
 		robot_mode = Do_Nothing;
 		writeDebugStreamLine("Switching to Do_Nothing mode");
-	}
-	else if (get_calibrating_mode_btn())
-	{
-		while (get_calibrating_mode_btn())
-			wait1Msec(1);
-		robot_mode = Calibrating_Sonar;
-		// PlaySound(soundBeepBeep);
-		writeDebugStreamLine("Switching to calibrate_sonar_mode");
 	}
 	else if (get_follow_closest_object_mode_btn())
 	{
@@ -279,25 +263,13 @@ task main()
 				stop_moving();
 				motor[sonar_rotate] = 0;
 				break;
-			case Calibrating_Sonar:
-				stop_moving();
-				reset_readings();
-				move_to_position(720); // really 627.2 counts per revolution in high-torque configuration, but play in the mechanism, it doesn't actually go the whole distance, so compensate a bit.
-				//http://www.robotc.net/wiki/Tutorials/Programming_with_the_new_VEX_Integrated_Encoder_Modules
-				move_to_position(0);
-				straight_ahead = find_closest_sonar_bin();
-				writeDebugStreamLine("got calibration of %d", straight_ahead);
-				move_to_position(ENCODER_COUNTS_PER_BIN * (straight_ahead + 0.5));
-				robot_mode = Do_Nothing;
-				break;
-
 			case Follow_Closest_Object:
 				// keep moving the sonar
 
 				// turn the robot towards the closest object
 				int closest_bin = find_closest_sonar_bin();
 				writeDebugStreamLine("closest_bin: %d", closest_bin);
-				int degrees_to_turn = (closest_bin - straight_ahead) * (360/SONAR_BINS);
+				int degrees_to_turn = closest_bin * (360/SONAR_BINS);
 				writeDebugStreamLine("degrees_to_turn: %d", degrees_to_turn);
 				while (degrees_to_turn > 180)
 				{
