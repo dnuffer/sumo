@@ -390,6 +390,133 @@ task sonar_scanner()
 	}
 }
 
+#define SUMO_STOP 0
+#define SUMO_CHASE 1
+#define SUMO_FWD_PUSH 2
+#define SUMO_BCK_PUSH 3
+#define SUMO_SPIN 4
+
+//sensor reading functions
+int bump_detect_front()
+{
+	//code to return value of front bump button
+	return 0;
+}
+int bump_detect_back()
+{
+	//code to return value of back bump button
+	return 0;
+}
+int side_detect()
+{
+	//code to return left side bump button OR'd with right side bump button
+	return 0;
+}
+int line_detect()
+{
+	//code to line presense
+	return 0;
+}
+
+int sumo_stop_state()
+{
+	return SUMO_CHASE;
+}
+int sumo_chase_state()
+{
+	while (1)
+	{
+		//sonar follow code
+
+		//state transition on sensor input
+		if (bump_detect_front())
+			return SUMO_FWD_PUSH;
+		if (bump_detect_back())
+			return SUMO_BCK_PUSH;
+		if (line_detect())
+			return SUMO_STOP;
+		if (side_detect())
+			return SUMO_SPIN;
+	}
+}
+int sumo_push_fwd_state()
+{
+	while (1)
+	{
+		//drive forward code
+
+		//state transition on sensor input
+		if (!bump_detect_front()) //release of contact
+			return SUMO_STOP;
+		if (bump_detect_back())
+			return SUMO_BCK_PUSH;
+		if (line_detect())
+			return SUMO_STOP;
+		if (side_detect())
+			return SUMO_SPIN;
+	}
+}
+int sumo_push_bck_state()
+{
+	while (1)
+	{
+		//drive backward code
+
+		//state transition on sensor input
+		if (!bump_detect_back()) //release of contact
+			return SUMO_STOP;
+		if (bump_detect_front())
+			return SUMO_FWD_PUSH;
+		if (line_detect())
+			return SUMO_STOP;
+		if (side_detect())
+			return SUMO_SPIN;
+	}
+}
+int sumo_spin_state()
+{
+	while (1)
+	{
+		//code to spin in either direction
+
+		//state transition on sensor input
+		if (bump_detect_front()) //release of contact
+			return SUMO_FWD_PUSH;
+		if (bump_detect_back())
+			return SUMO_BCK_PUSH;
+		if (line_detect())
+			return SUMO_STOP;
+		if (!side_detect())
+			return SUMO_STOP;
+	}
+}
+
+void sumo_mode_loop()
+{
+	int sumo_state = SUMO_STOP;
+	while (1)
+	{
+		switch (sumo_state)
+		{
+			case SUMO_STOP:
+			sumo_state = sumo_stop_state();
+			break;
+			case SUMO_CHASE:
+			sumo_state = sumo_chase_state();
+			break;
+			case SUMO_FWD_PUSH:
+			sumo_state = sumo_push_fwd_state();
+			break;
+			case SUMO_BCK_PUSH:
+			sumo_state = sumo_push_bck_state();
+			break;
+			case SUMO_SPIN:
+			sumo_state = sumo_spin_state();
+			break;
+		}
+	}
+}
+
 task main()
 {
 
