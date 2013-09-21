@@ -581,6 +581,7 @@ void sumo_mode_loop()
 #define ROBOT_DIAM 317.5			// distance between turning point of wheels (mm)
 //#define MM_TO_ENC (180.0 / (PI * RADIUS))
 #define MM_TO_ENC (ENCODER_COUNTS_PER_REV / (2.0 * PI * RADIUS))
+#define ENC_TO_MM (1.0/MM_TO_ENC)
 //#define DEG_TO_ENC ((ROBOT_DIAM * ENCODER_COUNTS_PER_REV) / (2.0 * RADIUS))
 // multiply by degrees of desired turn, and get the number of encoder counts to run forward one side motor
 #define DEG_TO_ENC ((ROBOT_DIAM * ENCODER_COUNTS_PER_REV) / (360 * RADIUS))
@@ -819,24 +820,63 @@ void init_particles(int particle_seed)
 	}
 }
 
+long prev_left_encoder = 0;
+long prev_right_encoder = 0;
+
 // void predict_particles() - Predict the position of particles based on commanded movement
 // and adding process noise
 void predict_particles()
 {
-	int i;
-	float approx_ang;
-	float noisy_dist, noisy_ang;
+	long left_encoder = nMotorEncoder[centerLeft];
+	long right_encoder = nMotorEncoder[centerRight];
 
 	// Predict
-	for (i = 0; i < NUM_PRTCL; i++) {
-		noisy_dist = dist * (1.0 + normal_rand() * ENC_NOISE);
-		noisy_ang = dq * (1.0 + normal_rand() * ENC_NOISE);
-		approx_ang = particle_q[i] + noisy_ang;
-		particle_x[i] += noisy_dist * cos(approx_ang);
-		particle_y[i] += noisy_dist * sin(approx_ang);
-		particle_q[i] += noisy_ang;
-		limit_ang(particle_q[i]);
+	for (int i = 0; i < NUM_PRTCL; i++)
+	{
+		long left_d = (left_encoder - prev_left_encoder) * (1.0 + normal_rand() * ENC_NOISE);
+		long right_d = (right_encoder - prev_right_encoder) * (1.0 + normal_rand() * ENC_NOISE);
+		float left_d_mm = ENC_TO_MM * left_d;
+		float right_d_mm = ENC_TO_MM * right_d;
+		if (left_d_mm != right_d_mm)
+		{
+			float inner_d_mm;
+			float outer_d_mm;
+			int direction;
+			if (left_d_mm < right_d_mm)
+			{
+				inner_d_mm = left_d_mm;
+				outer_d_mm = right_d_mm;
+				direction = -1;
+			}
+			else
+			{
+				inner_d_mm = right_d_mm;
+				outer_d_mm = left_d_mm;
+				direction = 1;
+			}
+			float internal_radius =
+					- (inner_d_mm * ROBOT_DIAM) / (inner_d_mm - outer_d_mm);
+			float theta = (outer_d_mm - inner_d_mm) / ROBOT_DIAM;
+
+			float turn_x = particle_x[i] + (internal_radius + ROBOT_DIAM / 2) * cos(particle_q[i] + direction * PI_ON_TWO);
+			float turn_y = particle_y[i] + (internal_radius + ROBOT_DIAM / 2) * sin(particle_q[i] + direction * PI_ON_TWO);
+
+			particle_x[i] = turn_x + (internal_radius + ROBOT_DIAM / 2) * cos(particle_q[i] + direction * PI_ON_TWO - theta);
+			particle_y[i] = turn_y + (internal_radius + ROBOT_DIAM / 2) * sin(particle_q[i] + direction * PI_ON_TWO - theta);
+			particle_q[i] += theta;
+
+			limit_ang(particle_q[i]);
+		}
+		else // left_d_mm == right_d_mm
+		{
+			// just moved straight
+			particle_x[i] += left_d_mm * cos(particle_q[i]);
+			particle_y[i] += left_d_mm * sin(particle_q[i]);
+		}
 	}
+	
+	prev_left_encoder = left_encoder;
+	prev_right_encoder = right_encoder;
 }
 
 // void update_weights() - Update the weights based on the current range readings
