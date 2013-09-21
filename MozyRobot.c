@@ -306,14 +306,16 @@ void turn_right()
 	motor[backRight] = 0;//-MOTOR_POWER;
 }
 
-void go_straight()
+void go_straight(bool forward)
 {
-	motor[frontLeft] = 0;//MOTOR_POWER;
-	motor[centerLeft] = 0;//MOTOR_POWER;
-	motor[backLeft] = 0;//MOTOR_POWER;
-	motor[frontRight] = 0;//MOTOR_POWER;
-	motor[centerRight] = 0;//MOTOR_POWER;
-	motor[backRight] = 0;//MOTOR_POWER;
+	int power = forward ? MOTOR_POWER : -MOTOR_POWER;
+
+	motor[frontLeft] = power;
+	motor[centerLeft] = power;
+	motor[backLeft] = power;
+	motor[frontRight] = power;
+	motor[centerRight] = power;
+	motor[backRight] = power;
 }
 
 void stop_moving()
@@ -1040,7 +1042,55 @@ void check_and_switch_mode()
 	}
 }
 
-task main()
+#define WanderMode 4
+#define ContactMode 5
+
+
+task main
+{
+  nMotorEncoder[centerRight] = 0;
+  nMotorEncoder[centerLeft] = 0;
+	bool going_forward = true;
+
+	pid_controller_t left_pid_controller;
+	init_drive_pid_controller(&left_pid_controller);
+
+	pid_controller_t right_pid_controller;
+	init_drive_pid_controller(&right_pid_controller);
+
+	while (true)
+	{
+    go_straight(going_forward);
+		wait1Msec(1);
+		if (!all_sensors_on_white())
+		{
+			going_forward = !going_forward;
+			while (!all_sensors_on_white())
+			{
+				wait1Msec(1);
+			}
+		} else
+		{
+			int turn_percentage = uniform_rand() * 1000;
+			if (turn_percentage > 998)
+		  {
+		  	// randomly turn
+		  	int degrees_to_turn = uniform_rand() * 180;
+
+				move_motor_to_position(centerLeft,
+					nMotorEncoder[centerLeft] + DEG_TO_ENC * degrees_to_turn,
+					&left_pid_controller, frontLeft, backLeft);
+		  }
+		}
+	}
+
+
+	go_straight(going_forward);
+	wait1Msec(20);
+
+}
+
+void future_task_main()
 {
 	nMotorEncoder[sonar_rotate] = 0;
   nMotorEncoder[centerRight] = 0;
@@ -1100,7 +1150,7 @@ task main()
 				}
 				else
 				{
-					go_straight();
+					go_straight(true);
 				}
 
 				wait1Msec(1);
