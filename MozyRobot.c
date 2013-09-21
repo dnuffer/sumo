@@ -1,6 +1,7 @@
 #pragma config(I2C_Usage, I2C1, i2cSensors)
-#pragma config(Sensor, in1,    line_follower,  sensorLineFollower)
-#pragma config(Sensor, in4,    potentiometer,  sensorPotentiometer)
+#pragma config(Sensor, in1,    line1,          sensorLineFollower)
+#pragma config(Sensor, in2,    line2,          sensorLineFollower)
+#pragma config(Sensor, in3,    line3,          sensorLineFollower)
 #pragma config(Sensor, dgtl1,  button1,        sensorTouch)
 #pragma config(Sensor, dgtl2,  button2,        sensorTouch)
 #pragma config(Sensor, dgtl3,  button3,        sensorTouch)
@@ -517,6 +518,423 @@ void sumo_mode_loop()
 	}
 }
 
+/********************************** Defines *****************************************/
+
+// Particle filter parameters and settings
+#define ENC_NOISE 0.15        // noise as fraction of commanded distance or angle
+#define LINE_SENS_NOISE 200.0  // noise of line sensor reading
+#define PART_XY_NOISE 50.0		// noise in initial positional placement of robot in mm
+#define PART_Q_NOISE 0.0523  	// noise in initial positional placement of robot in rad
+#define NUM_PRTCL 100					// number of particles *** NOTE update floating point value below as well
+#define F_NUM_PRTCL 100.0     // floating point representation of number of particles *** change with above
+#define ESS_THRESH 0.2				// resampling threshold
+
+// Physical characteristics of robot
+#define NUM_SENSORS 3					// number of sensors
+#define RADIUS 52						  // tyre radius (mm)
+#define ROBOT_DIAM 317.5			// distance between turning point of wheels (mm)
+//#define MM_TO_ENC (180.0 / (PI * RADIUS))
+#define MM_TO_ENC (ENCODER_COUNTS_PER_REV / (2.0 * PI * RADIUS))
+//#define DEG_TO_ENC ((ROBOT_DIAM * ENCODER_COUNTS_PER_REV) / (2.0 * RADIUS))
+// multiply by degrees of desired turn, and get the number of encoder counts to run forward one side motor
+#define DEG_TO_ENC ((ROBOT_DIAM * ENCODER_COUNTS_PER_REV) / (360 * RADIUS))
+
+// Starting position and angle
+#define START_X 0.0
+#define START_Y 0.0
+#define START_Q 0.0
+
+// Handy constants
+#define TWO_PI 6.28318530718
+#define PI_ON_TWO 1.5707963268
+#define BIG_NUMBER 999999.0
+
+// TODO: Measure these!
+// values given where the robot is on the playing field.
+#define WHITE_SENSOR_READING 300.0
+#define RED_SENSOR_READING 1000.0
+#define BLACK_SENSOR_READING 2000.0
+
+#define MAP_WHITE_RADIUS 914.4 // mm
+#define MAP_BLACK_RADIUS (MAP_WHITE_RADIUS + 50.0) // mm
+
+/****************************** Constants *******************************/
+// Sensors
+// TODO: measure this once the sensors are actually mounted
+const float sens_x[3] = {-60.0,  0.0,  60.0}; // x coords of sensors in robot coord frame
+const float sens_y[3] = {-85.0, 60.0, -85.0}; // y coords of sensors in robot coord frame
+
+// Precompute some handy numbers
+const float	ess_thresh = ESS_THRESH * F_NUM_PRTCL;
+const float	sens_dist_noise_2sq = 2.0 * LINE_SENS_NOISE * LINE_SENS_NOISE;
+
+
+/****************************** Globals **********************************/
+
+// Particle filter storage
+float particle_x [NUM_PRTCL];
+float particle_y [NUM_PRTCL];
+float particle_q [NUM_PRTCL];
+float particle_w [NUM_PRTCL];
+
+// Sensor readings
+int sensor_reading[NUM_SENSORS];
+
+// Interprocess variables
+float avg_x, avg_y, avg_q;  // Pose reported by filter
+float dist, dq;							// Commanded distance and angle from motion planner
+
+
+/******************************************************************************
+*															Function definitions                            *
+******************************************************************************/
+
+/*************************** Utility functions *******************************/
+
+// float uniform_rand() - Produces floating point random number between [0,1)
+float uniform_rand()
+{
+	return ((float)(random(32766))/ 32767.0);
+}
+
+// float normal_rand() - Produces random number for Gaussian distribution with mean = 0 and sd = 1.
+// Based on Box-Muller transformation.
+float normal_rand()
+{
+	return sqrt(-2.0 * log(uniform_rand())) * cos(2.0 * PI * uniform_rand());
+}
+
+// void atan2(float y, float x, float &q) - Computes atan2() but returns value in parameter
+void atan2(float y, float x, float &q)
+{
+	if (x > 0.0) {
+		q = atan(y/x);
+		return;
+	}
+	if (x < 0.0) {
+		if (y >= 0.0) {
+			q = PI + atan(y/x);
+			return;
+		}
+		q = -PI + atan(y/x);
+		return;
+	}
+	if (y > 0.0) { // x == 0
+		q = PI_ON_TWO;
+		return;
+	}
+	if (y < 0.0) {
+		q = -PI_ON_TWO;
+		return;
+	}
+	q = 0.0; // Should really be undefined
+	return;
+}
+
+// void limit_ang(float &angle) - brings an angle back between +- PI
+// BEWARE: make sure this is called frequently on all angular variables or else it can take a
+// long time to unwind a angular number that has been rotated many times. Could be implemented better.
+void limit_ang(float &angle)
+{
+	while (angle > PI)
+		angle -= TWO_PI;
+	while (angle < -PI)
+		angle += TWO_PI;
+}
+
+/***************************** Particle filter functions *********************/
+
+// void read_line_sensors () - Read the sensors and put the values in range. Invalid
+// sensor readings are set to BIG_NUMBER
+void read_line_sensors ()
+{
+	int n;
+	int raw_s[3];
+
+  raw_s[0] = SensorValue[line1];
+  raw_s[1] = SensorValue[line1];
+  raw_s[2] = SensorValue[line1];
+
+	for (n = 0; n < NUM_SENSORS; n++) {
+		if ((raw_s[n] > 3000) || (raw_s[n] < 10)) {
+			sensor_reading[n] = MAX_INT;
+		}	else {
+			sensor_reading[n] = raw_s[n];
+		}
+	}
+}
+
+// resample variables which need to be globals instead of stack vars because there are too many
+	float new_x [NUM_PRTCL];
+	float new_y [NUM_PRTCL];
+	float new_q [NUM_PRTCL];
+	int index[NUM_PRTCL];
+	int x[NUM_PRTCL];
+	float q [NUM_PRTCL];
+	float r [NUM_PRTCL];
+
+// void resample () - Resample the particles using Select with Replacement.
+void resample ()
+{
+	int i, j;
+	float uniform_weight;
+
+	// Produce cumulative distribution
+	q[0] = particle_w[0];
+	for (i = 1; i < NUM_PRTCL; i++) {
+		q[i] = q[i-1] + particle_w[i];
+	}
+
+	// Produce a list of random integers with an ordering index
+	for (i = 0; i < NUM_PRTCL; i++) {
+		x[i] = random(32766);
+		index[i] = 0;
+		for (j = 0; j < i; j++) {
+			if (x[j] < x[i]) {
+				if (index[i] <= index[j]) {
+					index[i] = index[j] + 1;
+				}
+			} else {
+				index[j]++;
+			}
+		}
+	}
+	// Put numbers out in order using index, scale and cast list to floats
+	for (i = 0; i < NUM_PRTCL; i++) {
+		r[index[i]] = (float)(x[i]) / 32767.0;
+	}
+
+	// Make copies of particles as many times as the sorted random numbers appear
+	// between the cumulative distribution values
+	i = 0;
+	j = 0;
+  while (i < NUM_PRTCL) {
+  	if (r[i] < q[j]) {
+  		new_x[i] = particle_x[j];
+  		new_y[i] = particle_y[j];
+  		new_q[i] = particle_q[j];
+      i = i + 1;
+    } else {
+      j = j + 1;
+    }
+	}
+
+	// Put the copies into the particle list and reset weights
+	uniform_weight = 1.0 / F_NUM_PRTCL;
+	for (i = 0; i < NUM_PRTCL; i++) {
+		particle_x[i] = new_x[i];
+		particle_y[i] = new_y[i];
+		particle_q[i] = new_q[i];
+		particle_w[i] = uniform_weight;
+	}
+}
+
+// float get_reading(int n, float px, float py, float pq) - Work out what sensor
+// reading for sensor number n should be if robot is in pose (px, py, pq) using
+// information in map
+float get_reading(int n, float px, float py, float pq)
+{
+	// Update particle position to account sensor position
+	// wrt to turning axis of robot.
+	float cpq = cos(pq);
+	float spq = sin(pq);
+	float sensor_x = sens_x[n] * cpq - sens_y[n] * spq ;
+	float sensor_y = sens_x[n] * spq + sens_y[n] * cpq ;
+
+	float dist_from_center = sqrt(sensor_x * sensor_x + sensor_y * sensor_y);
+	if (dist_from_center < MAP_WHITE_RADIUS)
+	{
+		return WHITE_SENSOR_READING;
+	}
+	else if (dist_from_center < MAP_BLACK_RADIUS)
+	{
+		return BLACK_SENSOR_READING;
+	}
+	else
+	{
+		return RED_SENSOR_READING;
+	}
+}
+
+// void init_particles(int particle_seed) - Initialise particles with a spread
+// to express uncertainty in robot placement at start of test
+void init_particles(int particle_seed)
+{
+	int i;
+	float uniform_weight;
+
+	srand(particle_seed);
+	uniform_weight = 1.0 / F_NUM_PRTCL;
+	for (i = 0; i < NUM_PRTCL; i++) {
+		particle_x[i] = START_X + (normal_rand() * PART_XY_NOISE);
+		particle_y[i] = START_Y + (normal_rand() * PART_XY_NOISE);
+		particle_q[i] = START_Q + (normal_rand() * PART_Q_NOISE);
+		particle_w[i] = uniform_weight;
+	}
+}
+
+// void predict_particles() - Predict the position of particles based on commanded movement
+// and adding process noise
+void predict_particles()
+{
+	int i;
+	float approx_ang;
+	float noisy_dist, noisy_ang;
+
+	// Predict
+	for (i = 0; i < NUM_PRTCL; i++) {
+		noisy_dist = dist * (1.0 + normal_rand() * ENC_NOISE);
+		noisy_ang = dq * (1.0 + normal_rand() * ENC_NOISE);
+		approx_ang = particle_q[i] + noisy_ang;
+		particle_x[i] += noisy_dist * cos(approx_ang);
+		particle_y[i] += noisy_dist * sin(approx_ang);
+		particle_q[i] += noisy_ang;
+		limit_ang(particle_q[i]);
+	}
+}
+
+// void update_weights() - Update the weights based on the current range readings
+// and the quality of match of the readings to the map
+void update_weights()
+{
+	for (int n = 0; n < NUM_SENSORS; n++) {
+	  if (sensor_reading[n] != BIG_NUMBER) {
+			for (int i = 0; i < NUM_PRTCL; i++) {
+				float expected_reading = get_reading(n, particle_x[i], particle_y[i], particle_q[i]);
+				if (expected_reading != BIG_NUMBER) {
+					float dist_err = sensor_reading[n] - expected_reading;
+			    particle_w[i] *= exp(-dist_err * dist_err / sens_dist_noise_2sq);
+			  }
+		  }
+		}
+	}
+}
+
+// float normalise_weights() - Normalise the weights to sum to 1.0. Returns original sum
+// value principally to check for all zero weights which means we're lost
+float normalise_weights()
+{
+	float sum;
+	int i;
+
+	sum = 0.0;
+	for (i = 0; i < NUM_PRTCL; i++) {
+    sum += particle_w[i];
+	}
+	if (sum != 0.0) {
+		for (i = 0; i < NUM_PRTCL; i++) {
+	    particle_w[i] /= sum;
+	  }
+	}
+	return sum;
+}
+
+// void update_averages() - Computes the weighted average of the particles. NOTE Prone
+// to error if multi-modal distribution. Should really find mode and only use particles
+// near mode.
+void update_averages()
+{
+	int i;
+	float a_x, a_y, a_cq, a_sq;
+
+	a_x  = 0.0;
+	a_y  = 0.0;
+	a_cq = 0.0;
+	a_sq = 0.0;
+	for (i = 0; i < NUM_PRTCL; i++) {
+    a_x += particle_x[i] * particle_w[i];
+    a_y += particle_y[i] * particle_w[i];
+    // Compute using quadrature components to prevent problems at +/- PI
+    a_cq += cos(particle_q[i]) * particle_w[i];
+    a_sq += sin(particle_q[i]) * particle_w[i];
+	}
+	avg_x = a_x;
+	avg_y = a_y;
+	atan2(a_sq, a_cq, avg_q);
+}
+
+// float compute_ess() - Returns ess calculation to check information quality
+// of particles
+float compute_ess()
+{
+	int i;
+	float sum, temp;
+
+	// Check ESS
+	sum = 0.0;
+	for (i = 0; i < NUM_PRTCL; i++) {
+		temp = F_NUM_PRTCL * particle_w[i] - 1.0;
+		sum += temp * temp;
+	}
+	return(F_NUM_PRTCL / (1.0 + sum / F_NUM_PRTCL));
+}
+
+
+task location_updater()
+{
+	float ess = 0.0, sum = 0.0;
+
+	// Initialize position
+	avg_x = 0.0;
+	avg_y = 0.0;
+	avg_q = 0.0;
+
+	// Initialise particles with a random seed
+	init_particles(nSysTime);
+
+	// Set the initial movement to zero
+	dist = 0.0;
+	dq = 0.0;
+
+	while (1)
+	{
+
+		// Predict the position of the particles based on the last movement command
+		predict_particles();
+
+		// Sense
+		read_line_sensors();
+
+		// Update weights
+		update_weights();
+
+		// Normalise and check for zero weights
+		sum = normalise_weights();
+
+		// If all weights are zero then we are REALLY lost
+		//if (sum == 0.0) {
+			//StopTask(drive);
+			//motor[left_m] = 0;
+			//motor[right_m] = 0;
+			//update_display();
+			//nxtDisplayTextLine(0,"Hopelessly lost!!");
+			//while(true) {
+			//}
+		//}
+
+		// Compute weighted average position of particles
+		update_averages();
+
+		// Let the blocked movement task run now we are localised
+		//if (wait_for_filter > 0)
+		//	wait_for_filter--;
+
+		// Resample if necessary
+		ess = compute_ess();
+		if (ess < ess_thresh) {
+			resample();
+		}
+
+		// Wait for movement to finish before looping
+		//wait_for_drive = 1;
+		//while (wait_for_drive > 0) {
+		//	wait1Msec(1);
+		//}
+
+		wait1Msec(10);
+	}
+}
+
 task main()
 {
 
@@ -527,6 +945,8 @@ task main()
 	init_drive_pid_controller(&right_pid_controller);
 
 	reset_readings();
+
+	StartTask(location_updater);
 
 	while (1)
 	{
