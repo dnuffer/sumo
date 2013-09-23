@@ -277,6 +277,11 @@ int get_collision_button()
 	return vexRT[Btn8D] || SensorValue[collisionButton1];
 }
 
+int get_collision_button2()
+{
+	return SensorValue[collisionButton2];
+}
+
 bool get_toggle_rc_mode_btn()
 {
 	return (vexRT[Btn7U] == 1);
@@ -1185,6 +1190,11 @@ void ramming_speed()
 	go_straight_with_power(MAX_MOTOR_POWER);
 }
 
+void reverse_ramming_speed()
+{
+	go_straight_with_power(-MAX_MOTOR_POWER);
+}
+
 task main
 {
   nMotorEncoder[centerRight] = 0;
@@ -1237,6 +1247,14 @@ task main
 			ramming_speed();
 			wait1Msec(1000);
 			lower_probiscus();
+		}
+		else if( get_collision_button2() )
+		{
+			// Raise, shoot forward.
+			//raise_probiscus();
+			reverse_ramming_speed();
+			wait1Msec(1000);
+			//lower_probiscus();
 		}
 		else
 		{
