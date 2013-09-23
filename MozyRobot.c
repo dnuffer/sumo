@@ -8,6 +8,7 @@
 #pragma config(Sensor, dgtl3,  spareButton1,   sensorTouch)
 #pragma config(Sensor, dgtl4,  spareButton2,   sensorTouch)
 #pragma config(Sensor, dgtl6,  collisionButton1, sensorTouch)
+#pragma config(Sensor, dgtl7,  collisionButton2, sensorTouch)
 #pragma config(Sensor, dgtl9,  ultrasonicEncoder, sensorQuadEncoder)
 #pragma config(Sensor, dgtl11, ultrasonic,     sensorSONAR_mm)
 #pragma config(Sensor, I2C_1,  leftWheelEncoder, sensorQuadEncoderOnI2CPort,    , AutoAssign)
