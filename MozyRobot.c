@@ -29,13 +29,11 @@
 #define MIN(x, y) ((x) > (y) ? (y) : (x))
 #define CONSTRAIN(value, min_val, max_val) (MAX(min_val, MIN(value, max_val)))
 
-#define PROBISCUS_UP_MAX 1000
-#define PROBISCUS_DOWN_MAX 5000
-#define PROBISCUS_BUFFER 200
+#define PROBISCUS_UP_MAX 0
+#define PROBISCUS_DOWN_MAX 4500
 
-int probiscus_up = PROBISCUS_UP_MAX;
-int probiscus_down = PROBISCUS_DOWN_MAX;
-
+int probiscus_limit_up = PROBISCUS_UP_MAX;
+int probiscus_limit_down = PROBISCUS_DOWN_MAX;
 
 typedef struct
 {
@@ -1098,51 +1096,69 @@ int random_sign()
 
 int probiscus_up_value(int sensor, int value)
 {
-	return 1.5*MAX((MAX_MOTOR_POWER * (sensor - value) / (probiscus_down - probiscus_up)), 30);
+	return 1.5*MAX((MAX_MOTOR_POWER * (sensor - value) / (probiscus_limit_down - probiscus_limit_up)), 30);
 }
 
 int probiscus_down_value(int sensor, int value)
 {
-	return 1.5*MIN(-(MAX_MOTOR_POWER * (value - sensor) / (probiscus_down - probiscus_up)), -30);
+	return 1.5*MIN(-(MAX_MOTOR_POWER * (value - sensor) / (probiscus_limit_down - probiscus_limit_up)), -30);
+}
+
+int sign(int x)
+{
+	if( x >= 0 )
+	{
+		return 1;
+	}
+	return -1;
+}
+
+
+int move_probiscus_to_limit(int limit)
+{
+	int sensor = SensorValue[pot1];
+	writeDebugStreamLine("Limit: %d, sensor: %d", limit, sensor);
+
+	int direction = sign(sensor - limit);
+
+	int min_position = sensor;
+	int max_position = sensor;
+	int prior_max = -1;
+	int prior_min = -1;
+
+	writeDebugStreamLine("Setting motor speed to %d", direction * 80);
+	motor[weapon] = direction * 30;
+	do
+	{
+		prior_min = min_position;
+		prior_max = max_position;
+		wait1Msec(50);
+		writeDebugStreamLine("before sleep sensor: %d", sensor);
+		int new_sensor = SensorValue[pot1];
+		writeDebugStreamLine("after sleep sensor: %d", new_sensor);
+		min_position = MIN(min_position, new_sensor);
+		max_position = MAX(max_position, new_sensor);
+		sensor = new_sensor;
+		writeDebugStreamLine("min_position=%d, max_position=%d", min_position, max_position);
+		writeDebugStreamLine("prior_min=%d, prior_max=%d", prior_min, prior_max);
+	}
+	while( (prior_min != min_position) || (prior_max != max_position));
+	motor[weapon] = 0;
+	return sensor;
 }
 
 void determine_probiscus_range()
 {
-	int sensor = SensorValue[pot1];
-	int prev_value = sensor;
-	int stalled_count = 0;
+	writeDebugStreamLine("Finding up");
+	probiscus_limit_up = move_probiscus_to_limit(PROBISCUS_UP_MAX);
+	writeDebugStreamLine("upper limit: %d", probiscus_limit_up);
+	writeDebugStreamLine("Finding down");
+	probiscus_limit_down = move_probiscus_to_limit(PROBISCUS_DOWN_MAX);
+	writeDebugStreamLine("lower limit: %d", probiscus_limit_down);
 
-	// test up range
-	do
-	{
-		motor[weapon] = probiscus_up_value(sensor, PROBISCUS_UP_MAX);
-		wait10Msec(10);
-		sensor = SensorValue[pot1];
-		if (sensor == prev_value)
-		{
-			stalled_count++;
-		}
-		prev_value = sensor;
-	} while (stalled_count < 3 && sensor > PROBISCUS_UP_MAX);
-	motor[weapon] = 0;
-	probiscus_up = sensor + PROBISCUS_BUFFER;
-
-	stalled_count = 0;
-
-	// test down range
-	do
-	{
-		motor[weapon] = probiscus_down_value(sensor, PROBISCUS_DOWN_MAX);
-		wait10Msec(10);
-		sensor = SensorValue[pot1];
-		if (sensor == prev_value)
-		{
-			stalled_count++;
-		}
-		prev_value = sensor;
-	} while (stalled_count < 3 && sensor < PROBISCUS_DOWN_MAX);
-	motor[weapon] = 0;
-	probiscus_down = sensor - PROBISCUS_BUFFER;
+	probiscus_limit_up += probiscus_limit_up * 0.1;
+	probiscus_limit_down -= probiscus_limit_down * 0.1;
+	writeDebugStreamLine("final up limit: %d, down: %d", probiscus_limit_up, probiscus_limit_down);
 }
 
 void move_probiscus_to_position(int value)
@@ -1154,7 +1170,7 @@ void move_probiscus_to_position(int value)
 		{
 			// GO DOWN
 			motor[weapon] = probiscus_down_value(sensor, value);
-			wait1Msec(1);
+			wait1Msec(10);
 			sensor = SensorValue[pot1];
 		}
 		while( sensor < value );
@@ -1176,13 +1192,13 @@ void move_probiscus_to_position(int value)
 void raise_probiscus()
 {
 	writeDebugStreamLine("Raising");
-	move_probiscus_to_position(probiscus_up);
+	move_probiscus_to_position(probiscus_limit_up);
 }
 
 void lower_probiscus()
 {
 	writeDebugStreamLine("Lowering");
-	move_probiscus_to_position(probiscus_down);
+	move_probiscus_to_position(probiscus_limit_down);
 }
 
 void ramming_speed()
@@ -1197,7 +1213,7 @@ void reverse_ramming_speed()
 
 task main
 {
-  nMotorEncoder[centerRight] = 0;
+	nMotorEncoder[centerRight] = 0;
   nMotorEncoder[centerLeft] = 0;
 	bool going_forward = true;
 
@@ -1207,6 +1223,7 @@ task main
 	pid_controller_t right_pid_controller;
 	init_drive_pid_controller(&right_pid_controller);
 
+	wait1Msec(1000);
 	determine_probiscus_range();
 
 	raise_probiscus();
@@ -1244,16 +1261,22 @@ task main
 		{
 			// Raise, shoot forward.
 			raise_probiscus();
-			ramming_speed();
-			wait1Msec(1000);
+			while( get_collision_button() )
+			{
+				ramming_speed();
+				wait1Msec(1000);
+			}
 			lower_probiscus();
 		}
 		else if( get_collision_button2() )
 		{
 			// Raise, shoot forward.
 			//raise_probiscus();
-			reverse_ramming_speed();
-			wait1Msec(1000);
+			while( get_collision_button2() )
+			{
+				reverse_ramming_speed();
+				wait1Msec(1000);
+			}
 			//lower_probiscus();
 		}
 		else
