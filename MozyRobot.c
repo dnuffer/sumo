@@ -31,6 +31,8 @@
 
 #define PROBISCUS_UP_MAX 0
 #define PROBISCUS_DOWN_MAX 4500
+#define TURN_LEFT 0
+#define TURN_RIGHT 1
 
 int probiscus_limit_up = PROBISCUS_UP_MAX;
 int probiscus_limit_down = PROBISCUS_DOWN_MAX;
@@ -292,32 +294,12 @@ int get_right_side_collision_button()
 
 int get_toggle_rc_mode_btn()
 {
-	return vexRT[Btn7U];
+	return vexRT[Btn7U] || SensorValue[spareButton1];
 }
 
 
 #define MAX_MOTOR_POWER 127
 #define MOTOR_POWER 80
-
-void fast_turn_left()
-{
-	motor[frontLeft] = -MOTOR_POWER;
-	motor[centerLeft] = -MOTOR_POWER;
-	motor[backLeft] = -MOTOR_POWER;
-	motor[frontRight] = MOTOR_POWER;
-	motor[centerRight] = MOTOR_POWER;
-	motor[backRight] = MOTOR_POWER;
-}
-
-void fast_turn_right()
-{
-	motor[frontLeft] = MOTOR_POWER;
-	motor[centerLeft] = MOTOR_POWER;
-	motor[backLeft] = MOTOR_POWER;
-	motor[frontRight] = -MOTOR_POWER;
-	motor[centerRight] = -MOTOR_POWER;
-	motor[backRight] = -MOTOR_POWER;
-}
 
 void turn_left()
 {
@@ -1212,13 +1194,30 @@ void handle_collision_button2()
 	//lower_probiscus();
 }
 
-#define TURN_LEFT 0
-#define TURN_RIGHT 1
+void fast_turn_left()
+{
+	motor[frontLeft] = -MAX_MOTOR_POWER;
+	motor[centerLeft] = -MAX_MOTOR_POWER;
+	motor[backLeft] = -MAX_MOTOR_POWER;
+	motor[frontRight] = MAX_MOTOR_POWER;
+	motor[centerRight] = MAX_MOTOR_POWER;
+	motor[backRight] = MAX_MOTOR_POWER;
+}
+
+void fast_turn_right()
+{
+	motor[frontLeft] = MAX_MOTOR_POWER;
+	motor[centerLeft] = MAX_MOTOR_POWER;
+	motor[backLeft] = MAX_MOTOR_POWER;
+	motor[frontRight] = -MAX_MOTOR_POWER;
+	motor[centerRight] = -MAX_MOTOR_POWER;
+	motor[backRight] = -MAX_MOTOR_POWER;
+}
 
 void handle_side_collision_button(int turn_direction)
 {
 	int count = 0;
-	while (!get_collision_button() && !get_collision_button2() && count < 300)
+	while (!get_collision_button() && !get_collision_button2() && count < 150)
 	{
 		// pick random direction
 		if (turn_direction == TURN_LEFT)
@@ -1239,9 +1238,16 @@ void handle_side_collision_button(int turn_direction)
 		handle_collision_button1();
 	} else
 	{
+		stop_moving();
 		raise_probiscus();
-  	ramming_speed();
-  	wait1Msec(1000);
+		ramming_speed();
+		wait1Msec(1000);
+		while(get_collision_button())
+		{
+		  wait1Msec(1000);
+		}
+		lower_probiscus();
+		stop_moving();
 	}
 }
 
