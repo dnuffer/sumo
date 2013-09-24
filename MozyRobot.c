@@ -3,8 +3,8 @@
 #pragma config(Sensor, in2,    line2,          sensorLineFollower)
 #pragma config(Sensor, in3,    line3,          sensorLineFollower)
 #pragma config(Sensor, in8,    pot1,           sensorPotentiometer)
-#pragma config(Sensor, dgtl1,  leftButton,     sensorTouch)
-#pragma config(Sensor, dgtl2,  rightButton,    sensorTouch)
+#pragma config(Sensor, dgtl1,  leftCollisionButton, sensorTouch)
+#pragma config(Sensor, dgtl2,  rightCollisionButton, sensorTouch)
 #pragma config(Sensor, dgtl3,  spareButton1,   sensorTouch)
 #pragma config(Sensor, dgtl4,  spareButton2,   sensorTouch)
 #pragma config(Sensor, dgtl6,  collisionButton1, sensorTouch)
@@ -267,46 +267,58 @@ int get_do_nothing_mode_btn()
 
 int get_follow_closest_object_mode_btn()
 {
-	return vexRT[Btn8U] || SensorValue[spareButton1];
+	return SensorValue[spareButton1];
 }
 
 int get_collision_button()
 {
-	return vexRT[Btn8D] || SensorValue[collisionButton1];
+	return vexRT[Btn8U] || SensorValue[collisionButton1];
 }
 
 int get_collision_button2()
 {
-	return SensorValue[collisionButton2];
+	return vexRT[Btn8D] || SensorValue[collisionButton2];
 }
 
-bool get_toggle_rc_mode_btn()
+int get_left_side_collision_button()
 {
-	return (vexRT[Btn7U] == 1);
+	return vexRT[Btn8L] || SensorValue[leftCollisionButton];
 }
 
-void do_direct_drive()
+int get_right_side_collision_button()
 {
-	while (!get_toggle_rc_mode_btn())
-	{
-		// direct drive
-  	motor[frontLeft] = vexRT[Ch3];
-  	motor[centerLeft] = vexRT[Ch3];
-  	motor[backLeft] = vexRT[Ch3];
-  	motor[frontRight] = vexRT[Ch2];
-  	motor[centerRight] = vexRT[Ch2];
-  	motor[backRight] = vexRT[Ch2];
-	}
+	return vexRT[Btn8R] || SensorValue[rightCollisionButton];
+}
 
-	while (get_toggle_rc_mode_btn())
-	{
-		wait1Msec(100);
-	}
+int get_toggle_rc_mode_btn()
+{
+	return vexRT[Btn7U];
 }
 
 
 #define MAX_MOTOR_POWER 127
 #define MOTOR_POWER 80
+
+void fast_turn_left()
+{
+	motor[frontLeft] = -MOTOR_POWER;
+	motor[centerLeft] = -MOTOR_POWER;
+	motor[backLeft] = -MOTOR_POWER;
+	motor[frontRight] = MOTOR_POWER;
+	motor[centerRight] = MOTOR_POWER;
+	motor[backRight] = MOTOR_POWER;
+}
+
+void fast_turn_right()
+{
+	motor[frontLeft] = MOTOR_POWER;
+	motor[centerLeft] = MOTOR_POWER;
+	motor[backLeft] = MOTOR_POWER;
+	motor[frontRight] = -MOTOR_POWER;
+	motor[centerRight] = -MOTOR_POWER;
+	motor[backRight] = -MOTOR_POWER;
+}
+
 void turn_left()
 {
 	motor[frontLeft] = 0;//-MOTOR_POWER;
@@ -1043,43 +1055,6 @@ void switch_to_follow_closest_object() {
 	robot_mode = Follow_Closest_Object;
 }
 
-void check_and_switch_mode()
-{
-	if (get_do_nothing_mode_btn())
-	{
-		while (get_do_nothing_mode_btn())
-			wait1Msec(100);
-
-		robot_mode = Do_Nothing;
-		StopTask(sonar_scanner);
-
-		stop_moving();
-		motor[sonar_rotate] = 0;
-		//nMotorEncoder[centerRight] = 0;
-		writeDebugStreamLine("Switching to Do_Nothing mode");
-	}
-	else if (get_follow_closest_object_mode_btn())
-	{
-		while (get_follow_closest_object_mode_btn())
-			wait1Msec(100);
-		switch_to_follow_closest_object();
-		writeDebugStreamLine("Switching to Follow_Closest_Object mode");
-	}	else if (get_toggle_rc_mode_btn())
-	{
-		while (get_toggle_rc_mode_btn())
-			wait1Msec(100);
-		int previous_mode = robot_mode;
-		robot_mode = Direct_Drive;
-
-		writeDebugStreamLine("Switching to Direct_Drive mode");
-
-		// only returns when user pushes drive button again
-		do_direct_drive();
-
-		writeDebugStreamLine("Returning to previous mode");
-		robot_mode = previous_mode;
-	}
-}
 
 #define WanderMode 4
 #define ContactMode 5
@@ -1211,6 +1186,165 @@ void reverse_ramming_speed()
 	go_straight_with_power(-MAX_MOTOR_POWER);
 }
 
+void handle_collision_button1()
+{
+	// Raise, shoot forward.
+	ramming_speed();
+	raise_probiscus();
+	while( get_collision_button() )
+	{
+		wait1Msec(1000);
+	}
+	stop_moving();
+	lower_probiscus();
+}
+
+void handle_collision_button2()
+{
+	// Raise, shoot forward.
+	//raise_probiscus();
+	while( get_collision_button2() )
+	{
+		reverse_ramming_speed();
+		wait1Msec(1000);
+	}
+	stop_moving();
+	//lower_probiscus();
+}
+
+#define TURN_LEFT 0
+#define TURN_RIGHT 1
+
+void handle_side_collision_button(int turn_direction)
+{
+	int count = 0;
+	while (!get_collision_button() && !get_collision_button2() && count < 300)
+	{
+		// pick random direction
+		if (turn_direction == TURN_LEFT)
+		{
+			fast_turn_left();
+		} else
+		{
+			fast_turn_right();
+		}
+		wait1Msec(1);
+		count++;
+	}
+	if (get_collision_button())
+	{
+		handle_collision_button1();
+	} else if (get_collision_button2())
+	{
+		handle_collision_button1();
+	} else
+	{
+		raise_probiscus();
+  	ramming_speed();
+  	wait1Msec(1000);
+	}
+}
+
+bool check_and_handle_collision_buttons()
+{
+	if( get_collision_button() )
+	{
+		handle_collision_button1();
+		return true;
+	}
+	else if( get_collision_button2() )
+	{
+		handle_collision_button2();
+		return true;
+	}
+	else if( get_left_side_collision_button() )
+	{
+		handle_side_collision_button(TURN_LEFT);
+		return true;
+	}
+	else if( get_right_side_collision_button() )
+	{
+		handle_side_collision_button(TURN_RIGHT);
+		return true;
+	}
+	return false;
+}
+
+void do_direct_drive()
+{
+	while (true)
+	{
+		// direct drive
+  	motor[frontLeft] = vexRT[Ch2];
+  	motor[centerLeft] = vexRT[Ch2];
+  	motor[backLeft] = vexRT[Ch2];
+  	motor[frontRight] = vexRT[Ch3];
+  	motor[centerRight] = vexRT[Ch3];
+  	motor[backRight] = vexRT[Ch3];
+		if (get_toggle_rc_mode_btn())
+		{
+			while (get_toggle_rc_mode_btn())
+			{
+				wait10Msec(1);
+			}
+			return;
+		}
+		else
+		{
+			check_and_handle_collision_buttons();
+		}
+	}
+}
+
+void check_and_switch_mode()
+{
+	if (get_do_nothing_mode_btn())
+	{
+		while (get_do_nothing_mode_btn())
+			wait1Msec(100);
+
+		robot_mode = Do_Nothing;
+		StopTask(sonar_scanner);
+
+		stop_moving();
+		motor[sonar_rotate] = 0;
+		//nMotorEncoder[centerRight] = 0;
+		writeDebugStreamLine("Switching to Do_Nothing mode");
+	}
+	else if (get_follow_closest_object_mode_btn())
+	{
+		while (get_follow_closest_object_mode_btn())
+			wait1Msec(100);
+		switch_to_follow_closest_object();
+		writeDebugStreamLine("Switching to Follow_Closest_Object mode");
+	}	else if (get_toggle_rc_mode_btn())
+	{
+		while (get_toggle_rc_mode_btn())
+			wait1Msec(100);
+		int previous_mode = robot_mode;
+		robot_mode = Direct_Drive;
+
+		writeDebugStreamLine("Switching to Direct_Drive mode");
+
+		// only returns when user pushes drive button again
+		do_direct_drive();
+
+		writeDebugStreamLine("Returning to previous mode");
+		robot_mode = previous_mode;
+	}
+}
+
+
+
+void handle_rc_mode_btn()
+{
+	while (get_toggle_rc_mode_btn())
+	{
+		wait10Msec(1);
+	}
+	do_direct_drive();
+}
+
 task main
 {
 	nMotorEncoder[centerRight] = 0;
@@ -1243,41 +1377,33 @@ task main
 			off_white_count = 0;
 		}
 
-		if (off_white_count > 100)
+		if (off_white_count > 2)
 		{
 			going_forward = !going_forward;
 			go_straight(going_forward);
 			while (off_white_count > 0)
 			{
 				if (all_sensors_on_white())
+				{
 					off_white_count--;
-				else
-					off_white_count = 100;
+				}
 
+				if (get_toggle_rc_mode_btn())
+				{
+					handle_rc_mode_btn();
+					off_white_count = 0;
+					break;
+				}
 				wait1Msec(1);
 			}
 		}
-		else if( get_collision_button() )
+		else if (check_and_handle_collision_buttons())
 		{
-			// Raise, shoot forward.
-			raise_probiscus();
-			while( get_collision_button() )
-			{
-				ramming_speed();
-				wait1Msec(1000);
-			}
-			lower_probiscus();
+			// do nothing -- check_and_handle handled any button push
 		}
-		else if( get_collision_button2() )
+		else if( get_toggle_rc_mode_btn() )
 		{
-			// Raise, shoot forward.
-			//raise_probiscus();
-			while( get_collision_button2() )
-			{
-				reverse_ramming_speed();
-				wait1Msec(1000);
-			}
-			//lower_probiscus();
+			handle_rc_mode_btn();
 		}
 		else
 		{
