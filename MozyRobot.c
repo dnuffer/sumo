@@ -595,7 +595,7 @@ void sumo_mode_loop()
 // TODO: Measure these!
 // values given where the robot is on the playing field.
 #define WHITE_SENSOR_READING 300.0
-#define RED_SENSOR_READING 1000.0
+#define RED_SENSOR_READING 2000.0
 #define BLACK_SENSOR_READING 2000.0
 
 #define MAP_WHITE_RADIUS 914.4 // mm
@@ -713,6 +713,10 @@ bool all_sensors_on_white()
 
 	for( int i = 0; i < NUM_SENSORS; ++i )
 	{
+		if( i == 1 )
+		{
+			continue;
+		}
 		if( sensor_reading[i] >= RED_SENSOR_READING )
 		{
 			return false;
@@ -1383,7 +1387,7 @@ task main
 			off_white_count = 0;
 		}
 
-		if (off_white_count > 2)
+		if (off_white_count > 30)
 		{
 			going_forward = !going_forward;
 			go_straight(going_forward);
